@@ -1,1 +1,9 @@
+Tools to retrieve and process tweets.
+
+get_tweets.py contains several classes and various functions to retrieve tweets via the Twitter API, both streaming and search-based.
+
+tokenize_hash.py is a work-in-progress. Eventually it will tokenize hashtags into lists of words. Ignore it for now.
+
+tweets.json and tweets2.json contain get_tweets.ParsedTweet objects encoded as JSON.
+
 This file was created by PyCharm 2.7.2 for binding GitHub repository
