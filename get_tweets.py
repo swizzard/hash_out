@@ -1,9 +1,32 @@
 __author__ = 'samuelraker'
 
+import os
+os.environ['DJANGO_SETTINGS_MODULE'] = 'samrakerdotcom.settings'
 import re
 import json
 import time
 import twitter
+# from django.conf import settings
+from hash_to_hash.models import Tweet
+from hash_to_hash.models import Hashtag
+from hash_to_hash.models import Competitors
+
+
+# def db_test():
+#     tweet1 = Tweet(text="test #test")
+#     tweet2 = Tweet(text="another test #another")
+#     ht1 = Hashtag(text='test')
+#     ht2 = Hashtag(text='another')
+#     tweet1.save()
+#     tweet2.save()
+#     ht1.save()
+#     ht2.save()
+#     comp.save()
+#     ht1.tweet.add(tweet1)
+#     ht2.tweet.add(tweet2)
+#     comp.tag1.add(ht1)
+#     comp.tag2.add(ht2)
+
 
 
 class ParsedTweet(object):
@@ -396,7 +419,7 @@ class Twitterizer(object):
 
 
 class Twitterator(object):
-    def __init__(self, infile, outfile, verbosity=True):
+    def __init__(self, infile, outfile=None, verbosity=True):
         """
         A class to create Django-compliant fixtures from JSON-encoded ParsedTweet objects.
         :param infile: the name of the file containing the JSON-encoded ParsedTweet objects.
@@ -473,8 +496,8 @@ class Twitterator(object):
         tweet_fixture['fields']['uid'] = tweet.get_meta('id')
         tweet_fixture['fields']['time_zone'] = tweet.get_meta('time_zone')
         try:
-            tweet_fixture['fields']['lat'] = tweet.get_coordinates[1]
-            tweet_fixture['fields']['lon'] = tweet.get_coordinates[0]
+            tweet_fixture['fields']['lat'] = tweet.get_coordinates()[1]
+            tweet_fixture['fields']['lon'] = tweet.get_coordinates()[0]
         except TypeError:
             pass
         if self.verbosity:
@@ -482,6 +505,25 @@ class Twitterator(object):
         self.fixtures.append(tweet_fixture)
         for tag in tweet.get_hashes():
             self.parse_hash(tag)
+        self.tweet_i += 1
+
+    def tweet_to_db(self, tweet):
+        try:
+            lat = tweet.get_coordinates()[1]
+            lon = tweet.get_coordinates()[0]
+        except TypeError:
+            lat=None
+            lon=None
+        t = Tweet(id=self.tweet_i,
+                  text=tweet.text,
+                  munged_text=tweet.munged_text,
+                  uid=tweet.uid,
+                  time_zone=tweet.time_zone,
+                  lat=lat,
+                  lon=lon)
+        t.save()
+        for hashtag in tweet.get_hashes():
+            self.hashtag_to_db(hashtag,t)
         self.tweet_i += 1
 
     def parse_hash(self, tag):
@@ -501,6 +543,12 @@ class Twitterator(object):
         self.competitors.append(tag)
         self.hash_i += 1
 
+    def hashtag_to_db(self, hashtag, tweet):
+        h = Hashtag(id=self.hash_i,text=hashtag)
+        h.save()
+        h.tweet.add(tweet)
+        self.hash_i += 1
+
     def parse_competitors(self, competitor1, competitor2):
         """
         Creates a competitor set fixture from two hashtags.
@@ -518,14 +566,19 @@ class Twitterator(object):
         self.fixtures.append(competitor_fixture)
         self.competitors_i += 1
 
-    def process_tweets(self):
+    def competitors_to_db(self, competitor1, competitor2):
+        comps = Competitors(id=self.competitors_i, tag1=competitor1, tag2=competitor2, yes=0, no=0)
+        comps.save()
+        self.competitors_i += 1
+
+    def serialize_tweets(self):
         """
         Creates fixtures for all tweets read from the infile.
         """
         for tweet in self.tweet_generator():
             self.parse_tweet(tweet)
 
-    def process_competitors(self):
+    def serialize_competitors(self):
         """
         Creates fixtures for all competitors in .competitors.
         """
@@ -534,6 +587,23 @@ class Twitterator(object):
             for competitor in self.competitors:
                 if competitor1 != competitor:
                     self.parse_competitors(competitor1, competitor)
+
+    def tweets_to_db(self):
+        for tweet in self.tweet_generator():
+            tweet_to_db(tweet)
+
+    def competitors_to_db(self):
+        tags = Hashtag.objects.all()
+        for x in xrange(len(tags)):
+            for y in tags[x+1:]:
+                comps = Competitors(id=self.competitors_i,
+                                    tag1=tags[x],
+                                    tag2=y,
+                                    yes=0,
+                                    no=0)
+                comps.save()
+                self.competitors_i += 1
+
 
     def write_fixtures(self):
         """
