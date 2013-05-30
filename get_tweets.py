@@ -10,6 +10,8 @@ import twitter
 from hash_to_hash.models import Tweet
 from hash_to_hash.models import Hashtag
 from hash_to_hash.models import Competitors
+from django.db import IntegrityError
+from django.db import DatabaseError
 
 
 # def db_test():
@@ -51,6 +53,7 @@ class ParsedTweet(object):
         """
         self.tokenize = tokenize or self.__split__
         self.text = text or metadata.get('text','')
+        self.text = self.text.encode('utf8','replace').decode('ascii','replace')
         self.tokenized_text = self.tokenize(text)
         self.munge_p = re.compile(r'@[\w\d_]+')
         self.munged_text = re.sub(self.munge_p, '@xxxxxxxx', self.text)
@@ -66,6 +69,7 @@ class ParsedTweet(object):
             except KeyError:
                 self.hashtags = None
         self.hashtags = self.hashtags or re.findall(r'#[\w_\d]+', text)
+        self.uid = self.get_meta('user')['id']
 
     def __get_meta_key__(self, metadata):
         """
@@ -102,7 +106,7 @@ class ParsedTweet(object):
         :type verbose: boolean.
         :return: string, list, or dictionary, depending on the metadata in question.
         """
-        if self.meta_key:
+        if self.get('meta_key',None):
             if value:
                 try:
                     return self.meta_key[value]
@@ -126,8 +130,9 @@ class ParsedTweet(object):
         if hasattr(self, value):
             return self.__getattribute__(value)
         else:
-            if self.meta_key:
-                return self.meta_key.get(value, default)
+            if hasattr(self, 'meta_key'):
+            	if hasattr(self.meta_key, 'get'):
+               		return self.meta_key.get(value, default)
             else:
                 return default
 
@@ -180,6 +185,9 @@ class ParsedTweet(object):
                 coordinates = coordinates[0]
             else:
                 return coordinates
+
+    def get_uid(self):
+	return self.uid
 
     def to_json(self, verbose=True):
         """
@@ -419,9 +427,12 @@ class Twitterizer(object):
 
 
 class Twitterator(object):
-    def __init__(self, infile, outfile=None, verbosity=True):
+    def __init__(self, infile=None, outfile=None, verbosity=True):
         """
-        A class to create Django-compliant fixtures from JSON-encoded ParsedTweet objects.
+        A class to create Django-compliant fixtures from JSON-encoded ParsedTweet objects,
+        or save ParsedTweet objects directly to the database. Also includes methods for
+        generating and serializing/saving competitors.
+        NB: The fixture-generating methods below are VERY memory-intensive!
         :param infile: the name of the file containing the JSON-encoded ParsedTweet objects.
         :type infile: string.
         :param outfile: the name of the file to which to write the fixtures. NB: only one fixture
@@ -480,8 +491,11 @@ class Twitterator(object):
             lines = f.readlines()
         i = 0
         while i < len(lines):
-            yield ParsedTweet(json.loads(lines[i])[0], json.loads(lines[i])[1])
-            i += 1
+           try:
+		yield ParsedTweet(json.loads(lines[i])[0], json.loads(lines[i])[1])
+		i += 1
+	   except StopIteration:
+		break
 
     def parse_tweet(self, tweet):
         """
@@ -508,23 +522,32 @@ class Twitterator(object):
         self.tweet_i += 1
 
     def tweet_to_db(self, tweet):
+    	"""
+		Creates a Tweet object from a ParsedTweet object and saves it to the database.
+    	"""
         try:
             lat = tweet.get_coordinates()[1]
             lon = tweet.get_coordinates()[0]
         except TypeError:
             lat=None
             lon=None
-        t = Tweet(id=self.tweet_i,
-                  text=tweet.text,
-                  munged_text=tweet.munged_text,
-                  uid=tweet.uid,
-                  time_zone=tweet.time_zone,
-                  lat=lat,
-                  lon=lon)
-        t.save()
-        for hashtag in tweet.get_hashes():
-            self.hashtag_to_db(hashtag,t)
-        self.tweet_i += 1
+		t = Tweet(id=self.tweet_i,
+				  text=tweet.text,
+				  munged_text=tweet.munged_text,
+				  uid=tweet.get_uid(),
+				  time_zone=tweet.get_meta('time_zone'),
+				  lat=lat,
+				  lon=lon)
+		try:
+			t.save()
+			for hashtag in tweet.get_hashes():
+				self.hashtag_to_db(hashtag,t)
+		except IntegrityError:
+			self.tweet_i += 1
+			self.tweet_to_db(tweet)
+		else:
+			self.tweet_i += 1
+
 
     def parse_hash(self, tag):
         """
@@ -544,10 +567,24 @@ class Twitterator(object):
         self.hash_i += 1
 
     def hashtag_to_db(self, hashtag, tweet):
+    	"""
+    	Creates and saves Hashtag objects to the database.
+    	:param hashtag: the text of the hashtag
+    	:type hashtag: string
+    	:param tweet: the Tweet object associated with the hashtag
+    	:type tweet: Tweet object (see tweet_to_db, above)
+    	NB: While you probably could call this method directly, it's much less messy
+    	to let tweet_to_db call it instead.
+    	"""
         h = Hashtag(id=self.hash_i,text=hashtag)
-        h.save()
-        h.tweet.add(tweet)
-        self.hash_i += 1
+		try:
+			h.save()
+			h.tweet.add(tweet)
+		except IntegrityError:
+			self.hash_i += 1
+			self.hashtag_to_db(hashtag,tweet)
+		else:
+			self.hash_i += 1
 
     def parse_competitors(self, competitor1, competitor2):
         """
@@ -566,10 +603,10 @@ class Twitterator(object):
         self.fixtures.append(competitor_fixture)
         self.competitors_i += 1
 
-    def competitors_to_db(self, competitor1, competitor2):
-        comps = Competitors(id=self.competitors_i, tag1=competitor1, tag2=competitor2, yes=0, no=0)
-        comps.save()
-        self.competitors_i += 1
+#     def competitors_to_db(self, competitor1, competitor2):
+#         comps = Competitors(id=self.competitors_i, tag1=competitor1, tag2=competitor2, yes=0, no=0)
+#         comps.save()
+#         self.competitors_i += 1
 
     def serialize_tweets(self):
         """
@@ -589,20 +626,47 @@ class Twitterator(object):
                     self.parse_competitors(competitor1, competitor)
 
     def tweets_to_db(self):
+    	"""
+    	Iterates through .tweet_generator and saves all tweets to the database.
+    	"""
         for tweet in self.tweet_generator():
-            tweet_to_db(tweet)
+            self.tweet_to_db(tweet)
+
+	def __save_comps__(self,tag1, tag2):
+		"""
+		Creates and saves a Competitors object to the database. Helper method for
+		competitors_to_db to prevent IntegrityErrors caused by duplicate
+		primary keys.
+		:param tag1: the first hashtag in the pair
+		:type tag1: Hashtag object (see hashtag_to_db, above)
+		:param tag2: the second hashtag
+		:type tag2: Hashtag object
+		"""
+		try:
+			comps = Competitors(id=self.competitors_i,
+									tag1=tag1,
+									tag2=tag2,
+									yes=0,
+									no=0)
+			comps.save()
+		except IntegrityError:
+			self.competitors_i += 1
+			self.save_comps(tag1, tag2)
+		else:
+			self.competitors_i += 1
+
 
     def competitors_to_db(self):
+    	"""
+    	Retrieves Hashtag objects from the database and creates
+    	Competitor objects from them.
+    	NB: This method depends on Hashtag objects having been saved to the
+    	database. Only call it AFTER you've called hashtag_to_db/tweets_to_db.
+    	"""
         tags = Hashtag.objects.all()
         for x in xrange(len(tags)):
             for y in tags[x+1:]:
-                comps = Competitors(id=self.competitors_i,
-                                    tag1=tags[x],
-                                    tag2=y,
-                                    yes=0,
-                                    no=0)
-                comps.save()
-                self.competitors_i += 1
+				self.__save_comps__(tags[x], y)
 
 
     def write_fixtures(self):
@@ -614,6 +678,17 @@ class Twitterator(object):
         if self.verbosity:
             print "Wrote {} tweets, {} hashtags, and {} competitors to {}".format(self.tweet_i, self.hash_i,
                                                                                   self.competitors_i)
+
+def json_to_db(infile):
+	"""
+	Creates a Twitterator object from a JSON file and saves the ParsedTweet objects, hashtags,
+	and competitor pairs to the database.
+	:param infile: the path to the JSON file.
+	:type infile: string
+	"""
+	t = Twitterator(infile)
+	t.tweets_to_db()
+	t.competitors_to_db()
 
 def json_to_parsed(infile, maximum=None):
     """
@@ -628,7 +703,12 @@ def json_to_parsed(infile, maximum=None):
     with open(infile) as f:
         l = f.readlines()
     limit = maximum or len(l)
-    tweets = [ParsedTweet(json.loads(x)[0], json.loads(x)[1]) for x in l[:limit]]
+    tweets = []
+    for x in l[:limit]:
+        try:
+            ParsedTweet(json.loads(x)[0], json.loads(x)[1])
+        except ValueError:
+            continue
     return tweets
 
 
