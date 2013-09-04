@@ -1,3 +1,5 @@
+NOTE: Superceded by tweet_stuff (q.v.)
+
 Tools to retrieve and process tweets.
 
 get_tweets.py contains several classes and various functions to retrieve tweets via the Twitter API, both streaming and search-based.
